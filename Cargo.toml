@@ -1,0 +1,7 @@
+[package]
+name = "spmc"
+version = "0.1.0"
+description = "Simple SPMC channel"
+keywords = ["spmc", "channel", "queue"]
+authors = ["Sean McArthur <sean.monstar@gmail.com>"]
+license = "MIT"
