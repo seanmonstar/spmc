@@ -1,6 +1,11 @@
 # spmc
 
+[![Build Status](https://travis-ci.org/seanmonstar/spmc.svg?branch=master)](https://travis-ci.org/seanmonstar/spmc)
+[![crates.io](http://meritbadge.herokuapp.com/spmc)](https://crates.io/crates/spmc)
+
 Single-Producer, Multiple-Consumer channel for Rust.
+
+[Documentation](http://seanmonstar.github.io/spmc)
 
 ## License
 
