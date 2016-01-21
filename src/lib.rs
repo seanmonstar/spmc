@@ -1,3 +1,6 @@
+#![deny(warnings)]
+#![deny(missing_docs)]
+//! # SPMC
 use std::cell::UnsafeCell;
 use std::mem;
 use std::ops::Deref;
@@ -7,11 +10,13 @@ use std::sync::atomic::{AtomicPtr, AtomicBool, Ordering};
 
 pub use std::sync::mpsc::{SendError, RecvError, TryRecvError};
 
+/// Create a new SPMC channel.
 pub fn channel<T: Send>() -> (Sender<T>, Receiver<T>) {
     let a = Arc::new(Inner::new());
     (Sender::new(a.clone()), Receiver::new(a))
 }
 
+/// The Sending side of a SPMC channel.
 pub struct Sender<T: Send> {
     inner: Arc<Inner<T>>,
 }
@@ -24,6 +29,10 @@ impl <T: Send> Sender<T> {
             inner: inner
         }
     }
+
+    /// Send a message to the receivers.
+    ///
+    /// Returns a SendError if there are no more receivers listening.
     pub fn send(&self, t: T) -> Result<(), SendError<T>> {
         if self.inner.is_disconnected.load(Ordering::Acquire) {
             Err(SendError(t))
@@ -48,12 +57,24 @@ impl<T: Send> Drop for Sender<T> {
     }
 }
 
+/// The receiving side of a SPMC channel.
+///
+/// There may be many of these, and the Receiver itself is Sync, so it can be
+/// placed in an Arc, or cloned itself.
 pub struct Receiver<T: Send> {
     inner: Arc<RecvInner<T>>,
 }
 
 unsafe impl<T: Send> Send for Receiver<T> {}
 unsafe impl<T: Send> Sync for Receiver<T> {}
+
+impl<T: Send> Clone for Receiver<T> {
+    fn clone(&self) -> Receiver<T> {
+        Receiver {
+            inner: self.inner.clone()
+        }
+    }
+}
 
 impl<T: Send> Receiver<T> {
     fn new(inner: Arc<Inner<T>>) -> Receiver<T> {
@@ -63,6 +84,8 @@ impl<T: Send> Receiver<T> {
             })
         }
     }
+
+    /// Try to receive a message, without blocking.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         match self.inner.queue.pop() {
             Some(t) => Ok(t),
@@ -74,6 +97,10 @@ impl<T: Send> Receiver<T> {
         }
     }
 
+    /// Receive a message from the channel.
+    ///
+    /// If no message is available, this will block the current thread until a
+    /// message is sent.
     pub fn recv(&self) -> Result<T, RecvError> {
         match self.try_recv() {
             Ok(t) => Ok(t),
