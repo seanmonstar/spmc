@@ -1,6 +1,33 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 //! # SPMC
+//!
+//! A single procuder, multiple consumers. Commonly used to implement
+//! work-stealing.
+//!
+//! ## Example
+//!
+//! ```
+//! # use std::thread;
+//! let (tx, rx) = spmc::channel();
+//!
+//! let mut handles = Vec::new();
+//! for n in 0..5 {
+//!     let rx = rx.clone();
+//!     handles.push(thread::spawn(move || {
+//!         let msg = rx.recv().unwrap();
+//!         println!("worker {} recvd: {}", n, msg);
+//!     }));
+//! }
+//!
+//! for i in 0..5 {
+//!     tx.send(i * 2).unwrap();
+//! }
+//!
+//! for handle in handles {
+//!   handle.join().unwrap();
+//! }
+//! ```
 use std::cell::UnsafeCell;
 use std::mem;
 use std::ops::Deref;
