@@ -6,3 +6,4 @@ keywords = ["spmc", "channel", "queue"]
 authors = ["Sean McArthur <sean.monstar@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/seanmonstar/spmc"
+documentation = "http://seanmonstar.github.io/spmc"
