@@ -50,11 +50,9 @@ pub struct Sender<T: Send> {
 
 unsafe impl<T: Send> Send for Sender<T> {}
 
-impl <T: Send> Sender<T> {
+impl<T: Send> Sender<T> {
     fn new(inner: Arc<Inner<T>>) -> Sender<T> {
-        Sender {
-            inner: inner
-        }
+        Sender { inner: inner }
     }
 
     /// Send a message to the receivers.
@@ -97,29 +95,25 @@ unsafe impl<T: Send> Sync for Receiver<T> {}
 
 impl<T: Send> Clone for Receiver<T> {
     fn clone(&self) -> Receiver<T> {
-        Receiver {
-            inner: self.inner.clone()
-        }
+        Receiver { inner: self.inner.clone() }
     }
 }
 
 impl<T: Send> Receiver<T> {
     fn new(inner: Arc<Inner<T>>) -> Receiver<T> {
-        Receiver {
-            inner: Arc::new(RecvInner {
-                inner: inner
-            })
-        }
+        Receiver { inner: Arc::new(RecvInner { inner: inner }) }
     }
 
     /// Try to receive a message, without blocking.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         match self.inner.queue.pop() {
             Some(t) => Ok(t),
-            None => if self.inner.is_disconnected.load(Ordering::Acquire) {
-                Err(TryRecvError::Disconnected)
-            } else {
-                Err(TryRecvError::Empty)
+            None => {
+                if self.inner.is_disconnected.load(Ordering::Acquire) {
+                    Err(TryRecvError::Disconnected)
+                } else {
+                    Err(TryRecvError::Empty)
+                }
             }
         }
     }
@@ -133,12 +127,14 @@ impl<T: Send> Receiver<T> {
             Ok(t) => Ok(t),
             Err(TryRecvError::Disconnected) => Err(RecvError),
             Err(TryRecvError::Empty) => {
-                self.inner.is_sleeping.store(true, Ordering::Release);
-                let guard = self.inner.sleeping_guard.lock().unwrap();
-                let mut guard = self.inner.sleeping_condvar.wait(guard).unwrap();
-                if *guard {
-                    *guard = false;
-                    self.inner.is_sleeping.store(false, Ordering::Release);
+                {
+                    self.inner.is_sleeping.store(true, Ordering::Release);
+                    let guard = self.inner.sleeping_guard.lock().unwrap();
+                    let mut guard = self.inner.sleeping_condvar.wait(guard).unwrap();
+                    if *guard {
+                        *guard = false;
+                        self.inner.is_sleeping.store(false, Ordering::Release);
+                    }
                 }
                 self.recv()
             }
@@ -224,7 +220,7 @@ impl<T: Send> Queue<T> {
                         return (*node).value.take();
                     }
                 } else {
-                    return None
+                    return None;
                 }
             }
         }
@@ -240,7 +236,7 @@ impl<T> Node<T> {
     fn new(v: Option<T>) -> *mut Node<T> {
         let mut b = Box::new(Node {
             value: v,
-            next: AtomicPtr::new(ptr::null_mut())
+            next: AtomicPtr::new(ptr::null_mut()),
         });
         let n = &mut *b as *mut _;
         mem::forget(b);
@@ -309,5 +305,30 @@ mod tests {
         });
 
         assert_eq!(rx.recv(), Err(RecvError));
+    }
+
+    #[test]
+    fn test_send_sleep() {
+        use std::thread;
+        use std::time::Duration;
+
+        let (tx, rx) = channel();
+
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let rx = rx.clone();
+            handles.push(thread::spawn(move || {
+                rx.recv().unwrap();
+            }));
+        }
+
+        for i in 0..5 {
+            tx.send(i * 2).unwrap();
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
     }
 }
