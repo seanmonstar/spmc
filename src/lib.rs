@@ -252,10 +252,27 @@ mod tests {
         let (tx, rx) = channel();
         tx.send(5).unwrap();
         tx.send(12).unwrap();
+        tx.send(1).unwrap();
 
         assert_eq!(rx.try_recv(), Ok(5));
         assert_eq!(rx.try_recv(), Ok(12));
+        assert_eq!(rx.try_recv(), Ok(1));
         assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn test_multiple_consumers() {
+        let (tx, rx) = channel();
+        let rx2 = rx.clone();
+        tx.send(5).unwrap();
+        tx.send(12).unwrap();
+        tx.send(1).unwrap();
+
+        assert_eq!(rx.try_recv(), Ok(5));
+        assert_eq!(rx2.try_recv(), Ok(12));
+        assert_eq!(rx2.try_recv(), Ok(1));
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(rx2.try_recv(), Err(TryRecvError::Empty));
     }
 
     #[test]
