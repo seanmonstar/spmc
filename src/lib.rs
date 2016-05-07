@@ -123,11 +123,11 @@ impl<T: Send> Receiver<T> {
     /// If no message is available, this will block the current thread until a
     /// message is sent.
     pub fn recv(&self) -> Result<T, RecvError> {
-        match self.try_recv() {
-            Ok(t) => Ok(t),
-            Err(TryRecvError::Disconnected) => Err(RecvError),
-            Err(TryRecvError::Empty) => {
-                {
+        loop {
+            match self.try_recv() {
+                Ok(t) => return Ok(t),
+                Err(TryRecvError::Disconnected) => return Err(RecvError),
+                Err(TryRecvError::Empty) => {
                     self.inner.is_sleeping.store(true, Ordering::Release);
                     let guard = self.inner.sleeping_guard.lock().unwrap();
                     let mut guard = self.inner.sleeping_condvar.wait(guard).unwrap();
@@ -136,7 +136,6 @@ impl<T: Send> Receiver<T> {
                         self.inner.is_sleeping.store(false, Ordering::Release);
                     }
                 }
-                self.recv()
             }
         }
     }
