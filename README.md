@@ -5,7 +5,7 @@
 
 Single-Producer, Multiple-Consumer channel for Rust.
 
-[Documentation](http://seanmonstar.github.io/spmc)
+[Documentation](https://docs.rs/spmc)
 
 ## License
 
