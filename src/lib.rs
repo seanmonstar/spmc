@@ -347,4 +347,27 @@ mod tests {
             handle.join().unwrap();
         }
     }
+
+    #[test]
+    fn msgs_dropped() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Dropped(Arc<AtomicBool>);
+
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let sentinel = Arc::new(AtomicBool::new(false));
+
+
+        let (tx, rx) = channel();
+
+        tx.send(Dropped(sentinel.clone())).unwrap();
+        rx.recv().unwrap();
+
+        assert!(sentinel.load(Ordering::Relaxed));
+    }
 }
