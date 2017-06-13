@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn msgs_dropped() {
+    fn msg_dropped() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
         struct Dropped(Arc<AtomicBool>);
@@ -361,13 +361,48 @@ mod tests {
         }
 
         let sentinel = Arc::new(AtomicBool::new(false));
+        assert!(!sentinel.load(Ordering::Relaxed));
 
 
         let (tx, rx) = channel();
 
         tx.send(Dropped(sentinel.clone())).unwrap();
-        rx.recv().unwrap();
+        assert!(!sentinel.load(Ordering::Relaxed));
 
+        rx.recv().unwrap();
         assert!(sentinel.load(Ordering::Relaxed));
+    }
+
+
+    #[test]
+    fn msgs_dropped() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Dropped(Arc<AtomicUsize>);
+
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let sentinel = Arc::new(AtomicUsize::new(0));
+        assert_eq!(0, sentinel.load(Ordering::Relaxed));
+
+
+        let (tx, rx) = channel();
+
+        tx.send(Dropped(sentinel.clone())).unwrap();
+        tx.send(Dropped(sentinel.clone())).unwrap();
+        tx.send(Dropped(sentinel.clone())).unwrap();
+        tx.send(Dropped(sentinel.clone())).unwrap();
+        assert_eq!(0, sentinel.load(Ordering::Relaxed));
+
+        rx.recv().unwrap();
+        assert_eq!(1, sentinel.load(Ordering::Relaxed));
+        rx.recv().unwrap();
+        rx.recv().unwrap();
+        rx.recv().unwrap();
+        assert_eq!(4, sentinel.load(Ordering::Relaxed));
     }
 }
