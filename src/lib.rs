@@ -29,11 +29,10 @@
 //! }
 //! ```
 use std::cell::UnsafeCell;
-use std::mem;
 use std::ops::Deref;
 use std::ptr;
 use std::sync::{Arc, Mutex, Condvar};
-use std::sync::atomic::{AtomicPtr, AtomicBool, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicBool, AtomicUsize, Ordering};
 
 pub use std::sync::mpsc::{SendError, RecvError, TryRecvError};
 
@@ -63,9 +62,9 @@ impl<T: Send> Sender<T> {
             Err(SendError(t))
         } else {
             self.inner.queue.push(t);
-            if self.inner.is_sleeping.load(Ordering::Acquire) {
+            if self.inner.num_sleeping.load(Ordering::Acquire) > 0 {
                 *self.inner.sleeping_guard.lock().unwrap() = true;
-                self.inner.sleeping_condvar.notify_all();
+                self.inner.sleeping_condvar.notify_one();
             }
             Ok(())
         }
@@ -75,7 +74,7 @@ impl<T: Send> Sender<T> {
 impl<T: Send> Drop for Sender<T> {
     fn drop(&mut self) {
         self.inner.is_disconnected.store(true, Ordering::Release);
-        if self.inner.is_sleeping.load(Ordering::Relaxed) {
+        if self.inner.num_sleeping.load(Ordering::Relaxed) > 0 {
             *self.inner.sleeping_guard.lock().unwrap() = true;
             self.inner.sleeping_condvar.notify_all();
         }
@@ -123,21 +122,33 @@ impl<T: Send> Receiver<T> {
     /// If no message is available, this will block the current thread until a
     /// message is sent.
     pub fn recv(&self) -> Result<T, RecvError> {
+        match self.try_recv() {
+            Ok(t) => return Ok(t),
+            Err(TryRecvError::Disconnected) => return Err(RecvError),
+            Err(TryRecvError::Empty) => {},
+        }
+
+        let ret;
+        let mut guard = self.inner.sleeping_guard.lock().unwrap();
+        self.inner.num_sleeping.fetch_add(1, Ordering::Release);
+
         loop {
             match self.try_recv() {
-                Ok(t) => return Ok(t),
-                Err(TryRecvError::Disconnected) => return Err(RecvError),
-                Err(TryRecvError::Empty) => {
-                    self.inner.is_sleeping.store(true, Ordering::Release);
-                    let guard = self.inner.sleeping_guard.lock().unwrap();
-                    let mut guard = self.inner.sleeping_condvar.wait(guard).unwrap();
-                    if *guard {
-                        *guard = false;
-                        self.inner.is_sleeping.store(false, Ordering::Release);
-                    }
-                }
+                Ok(t) => {
+                    ret = Ok(t);
+                    break;
+                },
+                Err(TryRecvError::Disconnected) => {
+                    ret = Err(RecvError);
+                    break;
+                },
+                Err(TryRecvError::Empty) => {}
             }
+            guard = self.inner.sleeping_condvar.wait(guard).unwrap();
         }
+
+        self.inner.num_sleeping.fetch_sub(1, Ordering::Release);
+        ret
     }
 }
 
@@ -151,7 +162,7 @@ struct Inner<T: Send> {
     // needs one. A lock is not used elsewhere, its still a lock-free queue.
     sleeping_guard: Mutex<bool>,
     sleeping_condvar: Condvar,
-    is_sleeping: AtomicBool,
+    num_sleeping: AtomicUsize,
 }
 
 impl<T: Send> Inner<T> {
@@ -162,7 +173,7 @@ impl<T: Send> Inner<T> {
 
             sleeping_guard: Mutex::new(false),
             sleeping_condvar: Condvar::new(),
-            is_sleeping: AtomicBool::new(false),
+            num_sleeping: AtomicUsize::new(0),
         }
     }
 }
@@ -211,15 +222,41 @@ impl<T: Send> Queue<T> {
 
     fn pop(&self) -> Option<T> {
         unsafe {
+            let mut head = ptr::null_mut();
             loop {
-                let node = self.head.load(Ordering::Acquire);
-                let next = (*node).next.load(Ordering::Acquire);
-                if !next.is_null() {
-                    if node == self.head.compare_and_swap(node, next, Ordering::SeqCst) {
-                        return (*node).value.take();
-                    }
+                head = self.head.swap(head, Ordering::SeqCst);
+                if head == ptr::null_mut() {
+                    continue;
                 } else {
-                    return None;
+                    break;
+                }
+            }
+            let mut node = Box::from_raw(head);
+            let next = node.next.load(Ordering::Acquire);
+            if !next.is_null() {
+                self.head.store(next, Ordering::SeqCst);
+                return node.value.take();
+            } else {
+                self.head.store(Box::into_raw(node), Ordering::Release);
+                return None;
+            }
+        }
+    }
+}
+
+impl<T: Send> Drop for Queue<T> {
+    fn drop(&mut self) {
+        unsafe {
+            let head = self.head.swap(ptr::null_mut(), Ordering::Acquire);
+            if head != 0 as *mut _ && head != 1 as *mut _ {
+                let mut node = Box::from_raw(head);
+                loop {
+                    let next = node.next.load(Ordering::Acquire);
+                    if !next.is_null() {
+                        node = Box::from_raw(next);
+                    } else {
+                        break;
+                    }
                 }
             }
         }
@@ -233,13 +270,11 @@ struct Node<T> {
 
 impl<T> Node<T> {
     fn new(v: Option<T>) -> *mut Node<T> {
-        let mut b = Box::new(Node {
+        let b = Box::new(Node {
             value: v,
             next: AtomicPtr::new(ptr::null_mut()),
         });
-        let n = &mut *b as *mut _;
-        mem::forget(b);
-        n
+        Box::into_raw(b)
     }
 }
 
@@ -345,6 +380,37 @@ mod tests {
 
         for handle in handles {
             handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_tx_dropped_rxs_drain() {
+        for l in 0..10 {
+            println!("loop {}", l);
+
+            let (tx, rx) = channel();
+
+            let mut handles = Vec::new();
+            for _ in 0..5 {
+                let rx = rx.clone();
+                handles.push(::std::thread::spawn(move || {
+                    loop {
+                        match rx.recv() {
+                            Ok(_) => continue,
+                            Err(_) => break,
+                        }
+                    }
+                }));
+            }
+
+            for i in 0..10 {
+                tx.send(format!("Sending value {} {}", l, i)).unwrap();
+            }
+            drop(tx);
+
+            for handle in handles {
+                handle.join().unwrap();
+            }
         }
     }
 
