@@ -74,7 +74,7 @@ impl<T: Send> Sender<T> {
 impl<T: Send> Drop for Sender<T> {
     fn drop(&mut self) {
         self.inner.is_disconnected.store(true, Ordering::Release);
-        if self.inner.num_sleeping.load(Ordering::Relaxed) > 0 {
+        if self.inner.num_sleeping.load(Ordering::Acquire) > 0 {
             *self.inner.sleeping_guard.lock().unwrap() = true;
             self.inner.sleeping_condvar.notify_all();
         }
@@ -130,7 +130,7 @@ impl<T: Send> Receiver<T> {
 
         let ret;
         let mut guard = self.inner.sleeping_guard.lock().unwrap();
-        self.inner.num_sleeping.fetch_add(1, Ordering::Release);
+        self.inner.num_sleeping.fetch_add(1, Ordering::Relaxed);
 
         loop {
             match self.try_recv() {
@@ -147,7 +147,7 @@ impl<T: Send> Receiver<T> {
             guard = self.inner.sleeping_condvar.wait(guard).unwrap();
         }
 
-        self.inner.num_sleeping.fetch_sub(1, Ordering::Release);
+        self.inner.num_sleeping.fetch_sub(1, Ordering::Relaxed);
         ret
     }
 }
@@ -247,8 +247,8 @@ impl<T: Send> Queue<T> {
 impl<T: Send> Drop for Queue<T> {
     fn drop(&mut self) {
         unsafe {
-            let head = self.head.swap(ptr::null_mut(), Ordering::Acquire);
-            if head != 0 as *mut _ && head != 1 as *mut _ {
+            let head = self.head.swap(ptr::null_mut(), Ordering::SeqCst);
+            if head != ptr::null_mut() {
                 let mut node = Box::from_raw(head);
                 loop {
                     let next = node.next.load(Ordering::Acquire);
