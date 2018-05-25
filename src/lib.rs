@@ -2,7 +2,7 @@
 #![deny(missing_docs)]
 //! # SPMC
 //!
-//! A single procuder, multiple consumers. Commonly used to implement
+//! A single producer, multiple consumers. Commonly used to implement
 //! work-stealing.
 //!
 //! ## Example
