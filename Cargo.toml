@@ -7,3 +7,11 @@ authors = ["Sean McArthur <sean.monstar@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/seanmonstar/spmc"
 documentation = "https://docs.rs/spmc"
+
+[dependencies]
+futures = { optional = true, version = "0.1" }
+void = { optional = true, version = "1" }
+
+[features]
+default = ["futures_impls"]
+futures_impls = ["futures", "void"]
