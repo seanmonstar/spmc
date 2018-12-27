@@ -28,11 +28,25 @@
 //!   handle.join().unwrap();
 //! }
 //! ```
+#[cfg(feature = "futures_impls")]
+extern crate futures;
+#[cfg(feature = "futures_impls")]
+extern crate void;
+
+#[cfg(feature = "futures_impls")]
+use futures::{
+    task::{current as current_task, Task},
+    Async, Stream,
+};
 use std::cell::UnsafeCell;
 use std::ops::Deref;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+// #[cfg(feature = "futures_impls")]
+// use std::sync::mpsc::{channel as mpsc_channel, Receiver as MspcReceiver, Sender as MpscSender};
 use std::sync::{Arc, Condvar, Mutex};
+#[cfg(feature = "futures_impls")]
+use void::Void;
 
 pub use std::sync::mpsc::{RecvError, SendError, TryRecvError};
 
@@ -63,8 +77,15 @@ impl<T: Send> Sender<T> {
         } else {
             self.inner.queue.push(t);
             if self.inner.num_sleeping.load(Ordering::Acquire) > 0 {
-                *self.inner.sleeping_guard.lock().unwrap() = true;
-                self.inner.sleeping_condvar.notify_one();
+                let mut guard = self.inner.sleeping_guard.lock().unwrap();
+                guard.0 = true;
+                if guard.1.is_empty() {
+                    self.inner.sleeping_condvar.notify_one();
+                } else {
+                    for task in guard.1.drain(..) {
+                        task.notify();
+                    }
+                }
             }
             Ok(())
         }
@@ -75,7 +96,11 @@ impl<T: Send> Drop for Sender<T> {
     fn drop(&mut self) {
         self.inner.is_disconnected.store(true, Ordering::Release);
         if self.inner.num_sleeping.load(Ordering::Acquire) > 0 {
-            *self.inner.sleeping_guard.lock().unwrap() = true;
+            let mut guard = self.inner.sleeping_guard.lock().unwrap();
+            guard.0 = true;
+            for task in guard.1.drain(..) {
+                task.notify();
+            }
             self.inner.sleeping_condvar.notify_all();
         }
     }
@@ -85,25 +110,22 @@ impl<T: Send> Drop for Sender<T> {
 ///
 /// There may be many of these, and the Receiver itself is Sync, so it can be
 /// placed in an Arc, or cloned itself.
+#[derive(Clone)]
 pub struct Receiver<T: Send> {
     inner: Arc<RecvInner<T>>,
+    #[cfg(feature = "futures_impls")]
+    sleeping: bool,
 }
 
 unsafe impl<T: Send> Send for Receiver<T> {}
 unsafe impl<T: Send> Sync for Receiver<T> {}
 
-impl<T: Send> Clone for Receiver<T> {
-    fn clone(&self) -> Receiver<T> {
-        Receiver {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
 impl<T: Send> Receiver<T> {
     fn new(inner: Arc<Inner<T>>) -> Receiver<T> {
         Receiver {
             inner: Arc::new(RecvInner { inner: inner }),
+            #[cfg(feature = "futures_impls")]
+            sleeping: false,
         }
     }
 
@@ -156,15 +178,42 @@ impl<T: Send> Receiver<T> {
     }
 }
 
+impl<T: Send> Stream for Receiver<T> {
+    type Item = T;
+    type Error = Void;
+
+    fn poll(&mut self) -> Result<Async<Option<T>>, Void> {
+        match self.try_recv() {
+            Ok(t) => {
+                if self.sleeping {
+                    self.inner.num_sleeping.fetch_sub(1, Ordering::Relaxed);
+                }
+                return Ok(Async::Ready(Some(t)));
+            }
+            Err(TryRecvError::Disconnected) => return Ok(Async::Ready(None)),
+            Err(TryRecvError::Empty) => {}
+        }
+
+        let mut guard = self.inner.sleeping_guard.lock().unwrap();
+        self.inner.num_sleeping.fetch_add(1, Ordering::Relaxed);
+        guard.1.push(current_task());
+        self.sleeping = true;
+        Ok(Async::NotReady)
+    }
+}
+
 struct Inner<T: Send> {
     queue: Queue<T>,
 
     is_disconnected: AtomicBool,
 
     // ohai there. this is all just to allow the blocking functionality
-    // of recv(). The existance of this mutex is only because the condvar
-    // needs one. A lock is not used elsewhere, its still a lock-free queue.
-    sleeping_guard: Mutex<bool>,
+    // of recv(). The existence of this mutex is because the condvar needs one,
+    // and to guard the sleeping_tasks Vec.
+    #[cfg(feature = "futures_impls")]
+    sleeping_guard: Mutex<(bool, Vec<Task>)>,
+    #[cfg(not(feature = "futures_impls"))]
+    sleeping_guard: Mutex<(bool, ())>,
     sleeping_condvar: Condvar,
     num_sleeping: AtomicUsize,
 }
@@ -175,6 +224,9 @@ impl<T: Send> Inner<T> {
             queue: Queue::new(),
             is_disconnected: AtomicBool::new(false),
 
+            #[cfg(feature = "futures_impls")]
+            sleeping_guard: Mutex::new((false, Vec::new())),
+            #[cfg(not(feature = "futures_impls"))]
             sleeping_guard: Mutex::new(false),
             sleeping_condvar: Condvar::new(),
             num_sleeping: AtomicUsize::new(0),
@@ -468,5 +520,31 @@ mod tests {
         rx.recv().unwrap();
         rx.recv().unwrap();
         assert_eq!(4, sentinel.load(Ordering::Relaxed));
+    }
+
+    #[cfg(feature = "futures_impls")]
+    #[test]
+    fn futures_rx_stream() {
+        use futures::{executor::spawn, future::lazy};
+        use void::ResultVoidExt;
+
+        // spawn(lazy(...)) because Receiver can only be used as a Stream
+        // inside of a Task.
+        spawn(lazy(|| -> Result<(), Void> {
+            let (tx, mut rx) = channel();
+            assert_eq!(rx.poll(), Ok(Async::NotReady));
+            tx.send(1).unwrap();
+            assert_eq!(rx.poll(), Ok(Async::Ready(Some(1))));
+            tx.send(2).unwrap();
+            tx.send(3).unwrap();
+            assert_eq!(rx.poll(), Ok(Async::Ready(Some(2))));
+            assert_eq!(rx.poll(), Ok(Async::Ready(Some(3))));
+            assert_eq!(rx.poll(), Ok(Async::NotReady));
+            drop(tx);
+            assert_eq!(rx.poll(), Ok(Async::Ready(None)));
+            Ok(())
+        }))
+        .wait_future()
+        .void_unwrap()
     }
 }

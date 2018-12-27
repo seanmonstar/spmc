@@ -10,6 +10,8 @@ documentation = "https://docs.rs/spmc"
 
 [dependencies]
 futures = { optional = true, version = "0.1" }
+void = { optional = true, version = "1" }
 
 [features]
-default = ["futures"]
+default = ["futures_impls"]
+futures_impls = ["futures", "void"]
