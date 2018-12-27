@@ -36,14 +36,12 @@ extern crate void;
 #[cfg(feature = "futures_impls")]
 use futures::{
     task::{current as current_task, Task},
-    Async, Stream,
+    Async, AsyncSink, Stream,
 };
 use std::cell::UnsafeCell;
 use std::ops::Deref;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
-// #[cfg(feature = "futures_impls")]
-// use std::sync::mpsc::{channel as mpsc_channel, Receiver as MspcReceiver, Sender as MpscSender};
 use std::sync::{Arc, Condvar, Mutex};
 #[cfg(feature = "futures_impls")]
 use void::Void;
@@ -77,18 +75,45 @@ impl<T: Send> Sender<T> {
         } else {
             self.inner.queue.push(t);
             if self.inner.num_sleeping.load(Ordering::Acquire) > 0 {
-                let mut guard = self.inner.sleeping_guard.lock().unwrap();
-                guard.0 = true;
-                if guard.1.is_empty() {
-                    self.inner.sleeping_condvar.notify_one();
-                } else {
-                    for task in guard.1.drain(..) {
-                        task.notify();
-                    }
-                }
+                self.notify_one();
             }
             Ok(())
         }
+    }
+
+    #[cfg(feature = "futures_impls")]
+    fn notify_all(&self) {
+        let mut guard = self.inner.sleeping_guard.lock().unwrap();
+        guard.0 = true;
+        for task in guard.1.drain(..) {
+            task.notify();
+        }
+        self.inner.sleeping_condvar.notify_all();
+    }
+
+    #[cfg(not(feature = "futures_impls"))]
+    fn notify_all(&self) {
+        *self.inner.sleeping_guard.lock().unwrap() = true;
+        self.inner.sleeping_condvar.notify_all();
+    }
+
+    #[cfg(feature = "futures_impls")]
+    fn notify_one(&self) {
+        let mut guard = self.inner.sleeping_guard.lock().unwrap();
+        guard.0 = true;
+        if guard.1.is_empty() {
+            self.inner.sleeping_condvar.notify_one();
+        } else {
+            for task in guard.1.drain(..) {
+                task.notify();
+            }
+        }
+    }
+
+    #[cfg(not(feature = "futures_impls"))]
+    fn notify_one(&self) {
+        *self.inner.sleeping_guard.lock().unwrap() = true;
+        self.inner.sleeping_condvar.notify_one();
     }
 }
 
@@ -96,13 +121,22 @@ impl<T: Send> Drop for Sender<T> {
     fn drop(&mut self) {
         self.inner.is_disconnected.store(true, Ordering::Release);
         if self.inner.num_sleeping.load(Ordering::Acquire) > 0 {
-            let mut guard = self.inner.sleeping_guard.lock().unwrap();
-            guard.0 = true;
-            for task in guard.1.drain(..) {
-                task.notify();
-            }
-            self.inner.sleeping_condvar.notify_all();
+            self.notify_all();
         }
+    }
+}
+
+#[cfg(feature = "futures_impls")]
+impl<T: Send> futures::Sink for Sender<T> {
+    type SinkItem = T;
+    type SinkError = SendError<T>;
+
+    fn start_send(&mut self, t: T) -> Result<AsyncSink<T>, SendError<T>> {
+        Sender::send(self, t).map(|()| AsyncSink::Ready)
+    }
+
+    fn poll_complete(&mut self) -> Result<Async<()>, SendError<T>> {
+        Ok(Async::Ready(()))
     }
 }
 
@@ -178,6 +212,7 @@ impl<T: Send> Receiver<T> {
     }
 }
 
+#[cfg(feature = "futures_impls")]
 impl<T: Send> Stream for Receiver<T> {
     type Item = T;
     type Error = Void;
@@ -213,7 +248,7 @@ struct Inner<T: Send> {
     #[cfg(feature = "futures_impls")]
     sleeping_guard: Mutex<(bool, Vec<Task>)>,
     #[cfg(not(feature = "futures_impls"))]
-    sleeping_guard: Mutex<(bool, ())>,
+    sleeping_guard: Mutex<bool>,
     sleeping_condvar: Condvar,
     num_sleeping: AtomicUsize,
 }
