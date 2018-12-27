@@ -31,10 +31,10 @@
 use std::cell::UnsafeCell;
 use std::ops::Deref;
 use std::ptr;
-use std::sync::{Arc, Mutex, Condvar};
-use std::sync::atomic::{AtomicPtr, AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
-pub use std::sync::mpsc::{SendError, RecvError, TryRecvError};
+pub use std::sync::mpsc::{RecvError, SendError, TryRecvError};
 
 /// Create a new SPMC channel.
 pub fn channel<T: Send>() -> (Sender<T>, Receiver<T>) {
@@ -94,13 +94,17 @@ unsafe impl<T: Send> Sync for Receiver<T> {}
 
 impl<T: Send> Clone for Receiver<T> {
     fn clone(&self) -> Receiver<T> {
-        Receiver { inner: self.inner.clone() }
+        Receiver {
+            inner: self.inner.clone(),
+        }
     }
 }
 
 impl<T: Send> Receiver<T> {
     fn new(inner: Arc<Inner<T>>) -> Receiver<T> {
-        Receiver { inner: Arc::new(RecvInner { inner: inner }) }
+        Receiver {
+            inner: Arc::new(RecvInner { inner: inner }),
+        }
     }
 
     /// Try to receive a message, without blocking.
@@ -125,7 +129,7 @@ impl<T: Send> Receiver<T> {
         match self.try_recv() {
             Ok(t) => return Ok(t),
             Err(TryRecvError::Disconnected) => return Err(RecvError),
-            Err(TryRecvError::Empty) => {},
+            Err(TryRecvError::Empty) => {}
         }
 
         let ret;
@@ -137,11 +141,11 @@ impl<T: Send> Receiver<T> {
                 Ok(t) => {
                     ret = Ok(t);
                     break;
-                },
+                }
                 Err(TryRecvError::Disconnected) => {
                     ret = Err(RecvError);
                     break;
-                },
+                }
                 Err(TryRecvError::Empty) => {}
             }
             guard = self.inner.sleeping_condvar.wait(guard).unwrap();
@@ -216,7 +220,6 @@ impl<T: Send> Queue<T> {
             (*tail).next.store(end, Ordering::Release);
             (*tail).value = Some(t);
             *self.tail.get() = end;
-
         }
     }
 
@@ -330,9 +333,9 @@ mod tests {
 
     #[test]
     fn test_recv_blocks() {
-        use std::thread;
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::thread;
 
         let (tx, rx) = channel();
         let toggle = Arc::new(AtomicBool::new(false));
@@ -393,12 +396,10 @@ mod tests {
             let mut handles = Vec::new();
             for _ in 0..5 {
                 let rx = rx.clone();
-                handles.push(::std::thread::spawn(move || {
-                    loop {
-                        match rx.recv() {
-                            Ok(_) => continue,
-                            Err(_) => break,
-                        }
+                handles.push(::std::thread::spawn(move || loop {
+                    match rx.recv() {
+                        Ok(_) => continue,
+                        Err(_) => break,
                     }
                 }));
             }
@@ -416,8 +417,8 @@ mod tests {
 
     #[test]
     fn msg_dropped() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
         struct Dropped(Arc<AtomicBool>);
 
         impl Drop for Dropped {
@@ -429,7 +430,6 @@ mod tests {
         let sentinel = Arc::new(AtomicBool::new(false));
         assert!(!sentinel.load(Ordering::Relaxed));
 
-
         let (tx, rx) = channel();
 
         tx.send(Dropped(sentinel.clone())).unwrap();
@@ -439,11 +439,10 @@ mod tests {
         assert!(sentinel.load(Ordering::Relaxed));
     }
 
-
     #[test]
     fn msgs_dropped() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
         struct Dropped(Arc<AtomicUsize>);
 
         impl Drop for Dropped {
@@ -454,7 +453,6 @@ mod tests {
 
         let sentinel = Arc::new(AtomicUsize::new(0));
         assert_eq!(0, sentinel.load(Ordering::Relaxed));
-
 
         let (tx, rx) = channel();
 
