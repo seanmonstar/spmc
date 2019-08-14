@@ -1,3 +1,7 @@
 language: rust
 
 sudo: false
+
+env:
+  global:
+    - LOOM_MAX_PREEMPTIONS=2
