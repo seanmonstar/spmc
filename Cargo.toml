@@ -7,3 +7,6 @@ authors = ["Sean McArthur <sean.monstar@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/seanmonstar/spmc"
 documentation = "https://docs.rs/spmc"
+
+[dev-dependencies]
+loom = "0.2.2"
