@@ -1,6 +1,6 @@
 [package]
 name = "spmc"
-version = "0.2.3"
+version = "0.3.0"
 description = "Simple SPMC channel"
 keywords = ["spmc", "channel", "queue"]
 authors = ["Sean McArthur <sean.monstar@gmail.com>"]
