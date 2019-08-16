@@ -9,7 +9,7 @@
 //!
 //! ```
 //! # use std::thread;
-//! let (tx, rx) = spmc::channel();
+//! let (mut tx, rx) = spmc::channel();
 //!
 //! let mut handles = Vec::new();
 //! for n in 0..5 {
@@ -42,7 +42,7 @@ mod tests {
 
     #[test]
     fn test_sanity() {
-        let (tx, rx) = channel();
+        let (mut tx, rx) = channel();
         tx.send(5).unwrap();
         tx.send(12).unwrap();
         tx.send(1).unwrap();
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn test_multiple_consumers() {
-        let (tx, rx) = channel();
+        let (mut tx, rx) = channel();
         let rx2 = rx.clone();
         tx.send(5).unwrap();
         tx.send(12).unwrap();
@@ -70,14 +70,14 @@ mod tests {
 
     #[test]
     fn test_send_on_dropped_chan() {
-        let (tx, rx) = channel();
+        let (mut tx, rx) = channel();
         drop(rx);
         assert_eq!(tx.send(5), Err(SendError(5)));
     }
 
     #[test]
     fn test_try_recv_on_dropped_chan() {
-        let (tx, rx) = channel();
+        let (mut tx, rx) = channel();
         tx.send(2).unwrap();
         drop(tx);
 
@@ -92,7 +92,7 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let (tx, rx) = channel();
+        let (mut tx, rx) = channel();
         let toggle = Arc::new(AtomicBool::new(false));
         let toggle_clone = toggle.clone();
         thread::spawn(move || {
@@ -121,7 +121,7 @@ mod tests {
         use std::thread;
         use std::time::Duration;
 
-        let (tx, rx) = channel();
+        let (mut tx, rx) = channel();
 
         let mut handles = Vec::new();
         for _ in 0..5 {
@@ -146,7 +146,7 @@ mod tests {
         for l in 0..10 {
             println!("loop {}", l);
 
-            let (tx, rx) = channel();
+            let (mut tx, rx) = channel();
 
             let mut handles = Vec::new();
             for _ in 0..5 {
@@ -188,7 +188,7 @@ mod tests {
         assert!(!sentinel.load(Ordering::Relaxed));
 
 
-        let (tx, rx) = channel();
+        let (mut tx, rx) = channel();
 
         tx.send(Dropped(sentinel.clone())).unwrap();
         assert!(!sentinel.load(Ordering::Relaxed));
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(0, sentinel.load(Ordering::Relaxed));
 
 
-        let (tx, rx) = channel();
+        let (mut tx, rx) = channel();
 
         tx.send(Dropped(sentinel.clone())).unwrap();
         tx.send(Dropped(sentinel.clone())).unwrap();

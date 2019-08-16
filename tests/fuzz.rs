@@ -5,11 +5,24 @@ use loom::thread;
 #[path = "../src/channel.rs"]
 mod spmc;
 
+struct DropCounter(usize);
+
+impl Drop for DropCounter {
+    fn drop(&mut self) {
+        self.0 += 1;
+        assert_eq!(self.0, 1, "DropCounter dropped too many times");
+    }
+}
+
+fn msg() -> DropCounter {
+    DropCounter(0)
+}
+
 #[test]
 fn smoke() {
 
     loom::model(|| {
-        let (tx, rx) = spmc::channel::<String>();
+        let (mut tx, rx) = spmc::channel::<String>();
 
         let th = thread::spawn(move || {
             while let Ok(_s) = rx.recv() {
@@ -40,16 +53,16 @@ fn no_send() {
 }
 
 #[test]
-fn multiple_threads() {
+fn multiple_threads_race() {
     loom::model(|| {
-        let (tx, rx) = spmc::channel::<String>();
+        let (mut tx, rx) = spmc::channel();
 
 
         let mut threads = Vec::new();
 
         threads.push(thread::spawn(move || {
-            tx.send("hello".into()).unwrap();
-            tx.send("world".into()).unwrap();
+            tx.send(msg()).unwrap();
+            tx.send(msg()).unwrap();
         }));
 
         for _ in 0..2 {
@@ -69,3 +82,62 @@ fn multiple_threads() {
     });
 }
 
+
+#[test]
+fn message_per_thread() {
+    loom::model(|| {
+        let (mut tx, rx) = spmc::channel();
+
+
+        let mut threads = Vec::new();
+
+        threads.push(thread::spawn(move || {
+            tx.send(msg()).unwrap();
+            tx.send(msg()).unwrap();
+        }));
+
+        for t in 0..2 {
+            let rx = rx.clone();
+            threads.push(thread::spawn(move || {
+                match rx.recv() {
+                    Ok(_s) => (),
+                    Err(_e) => panic!("rx thread {} didn't get message", t),
+                }
+            }));
+        }
+
+        for th in threads {
+            th.join().unwrap();
+        }
+    });
+}
+
+#[test]
+fn extra_message() {
+    loom::model(|| {
+        let (mut tx, rx) = spmc::channel();
+
+
+        let mut threads = Vec::new();
+
+        threads.push(thread::spawn(move || {
+            tx.send(msg()).unwrap();
+            tx.send(msg()).unwrap();
+            tx.send(msg()).unwrap();
+        }));
+
+        for t in 0..2 {
+            let rx = rx.clone();
+            threads.push(thread::spawn(move || {
+                match rx.recv() {
+                    Ok(_s) => (),
+                    Err(_e) => panic!("rx thread {} didn't get message", t),
+                }
+            }));
+        }
+
+        for th in threads {
+            th.join().unwrap();
+        }
+    });
+}

@@ -23,6 +23,15 @@ pub mod sync {
         }
         */
 
+        /*
+        pub fn with_unchecked<F, R>(&self, f: F) -> R
+        where
+            F: FnOnce(*const T) -> R,
+        {
+            f(self.0.get())
+        }
+        */
+
         pub fn with_mut<F, R>(&self, f: F) -> R
         where
             F: FnOnce(*mut T) -> R,

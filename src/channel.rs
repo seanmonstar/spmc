@@ -29,12 +29,17 @@ impl<T: Send> Sender<T> {
     /// Send a message to the receivers.
     ///
     /// Returns a SendError if there are no more receivers listening.
-    pub fn send(&self, t: T) -> Result<(), SendError<T>> {
-        if self.inner.is_disconnected.load(Ordering::Acquire) {
+    pub fn send(&mut self, t: T) -> Result<(), SendError<T>> {
+        if self.inner.is_disconnected.load(Ordering::SeqCst) {
             Err(SendError(t))
         } else {
-            self.inner.queue.push(t);
-            if self.inner.num_sleeping.load(Ordering::Acquire) > 0 {
+            unsafe {
+                // Only safe from a single thread...
+                //
+                // But we have `&mut self`, so we're good!
+                self.inner.queue.push(t);
+            }
+            if self.inner.num_sleeping.load(Ordering::SeqCst) > 0 {
                 *self.inner.sleeping_guard.lock().unwrap() = true;
                 self.inner.sleeping_condvar.notify_one();
             }
@@ -45,7 +50,7 @@ impl<T: Send> Sender<T> {
 
 impl<T: Send> Drop for Sender<T> {
     fn drop(&mut self) {
-        self.inner.is_disconnected.store(true, Ordering::Release);
+        self.inner.is_disconnected.store(true, Ordering::SeqCst);
         if self.inner.num_sleeping.load(Ordering::SeqCst) > 0 {
             *self.inner.sleeping_guard.lock().unwrap() = true;
             self.inner.sleeping_condvar.notify_all();
@@ -80,8 +85,13 @@ impl<T: Send> Receiver<T> {
         match self.inner.queue.pop() {
             Some(t) => Ok(t),
             None => {
-                if self.inner.is_disconnected.load(Ordering::Acquire) {
-                    Err(TryRecvError::Disconnected)
+                if self.inner.is_disconnected.load(Ordering::SeqCst) {
+                    // Check that it didn't fill in a message inbetween
+                    // trying to pop and us checking is_disconnected
+                    match self.inner.queue.pop() {
+                        Some(t) => Ok(t),
+                        None => Err(TryRecvError::Disconnected),
+                    }
                 } else {
                     Err(TryRecvError::Empty)
                 }
@@ -99,6 +109,7 @@ impl<T: Send> Receiver<T> {
             Err(TryRecvError::Disconnected) => return Err(RecvError),
             Err(TryRecvError::Empty) => {},
         }
+
 
         let ret;
         let mut guard = self.inner.sleeping_guard.lock().unwrap();
@@ -163,54 +174,57 @@ impl<T: Send> Deref for RecvInner<T> {
 
 impl<T: Send> Drop for RecvInner<T> {
     fn drop(&mut self) {
-        self.inner.is_disconnected.store(true, Ordering::Release);
+        self.inner.is_disconnected.store(true, Ordering::SeqCst);
     }
 }
 
-struct Queue<T: Send> {
-    head: AtomicPtr<Node<T>>,
-    tail: CausalCell<*mut Node<T>>,
+pub(super) struct Queue<T: Send> {
+    head: CausalCell<*mut Node<T>>,
+    tail: AtomicPtr<Node<T>>,
 }
 
 impl<T: Send> Queue<T> {
-    fn new() -> Queue<T> {
+    pub(super) fn new() -> Queue<T> {
         let stub = Node::new(None);
         Queue {
-            head: AtomicPtr::new(stub),
-            tail: CausalCell::new(stub),
+            head: CausalCell::new(stub),
+            tail: AtomicPtr::new(stub),
         }
     }
 
-    fn push(&self, t: T) {
-        unsafe {
-            let end = Node::new(None);
-            self.tail.with_mut(move |tail| {
-                (**tail).next.store(end, Ordering::Release);
-                (**tail).value = Some(t);
-                *tail = end;
-            });
-        }
+    // Not safe to call from multiple threads.
+    pub(super) unsafe fn push(&self, t: T) {
+        let end = Node::new(None);
+
+        let node = self.head.with_mut(|p| {
+            ::std::mem::replace(&mut *p, end)
+        });
+
+        (*node).value = Some(t);
+        (*node).next.store(end, Ordering::SeqCst);
     }
 
-    fn pop(&self) -> Option<T> {
+    pub(super) fn pop(&self) -> Option<T> {
         unsafe {
-            let mut head = ptr::null_mut();
+            let mut tail = ptr::null_mut();
             loop {
-                head = self.head.swap(head, Ordering::SeqCst);
-                if head == ptr::null_mut() {
+                tail = self.tail.swap(tail, Ordering::SeqCst);
+                if tail.is_null() {
                     thread::yield_now();
                     continue;
                 } else {
                     break;
                 }
             }
-            let mut node = Box::from_raw(head);
-            let next = node.next.load(Ordering::Acquire);
+
+            let mut node = Box::from_raw(tail);
+
+            let next = node.next.load(Ordering::SeqCst);
             if !next.is_null() {
-                self.head.store(next, Ordering::SeqCst);
+                self.tail.store(next, Ordering::SeqCst);
                 return node.value.take();
             } else {
-                self.head.store(Box::into_raw(node), Ordering::Release);
+                self.tail.store(Box::into_raw(node), Ordering::SeqCst);
                 return None;
             }
         }
@@ -220,11 +234,11 @@ impl<T: Send> Queue<T> {
 impl<T: Send> Drop for Queue<T> {
     fn drop(&mut self) {
         unsafe {
-            let head = self.head.swap(ptr::null_mut(), Ordering::SeqCst);
+            let head = self.tail.swap(ptr::null_mut(), Ordering::SeqCst);
             if head != ptr::null_mut() {
                 let mut node = Box::from_raw(head);
                 loop {
-                    let next = node.next.load(Ordering::Acquire);
+                    let next = node.next.load(Ordering::SeqCst);
                     if !next.is_null() {
                         node = Box::from_raw(next);
                     } else {
