@@ -4,6 +4,9 @@ use std::ptr;
 use std::sync::mpsc::{SendError, RecvError, TryRecvError};
 use std::sync::atomic::Ordering;
 
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use loom::sync::{Arc, Mutex, CausalCell, Condvar};
 use loom::sync::atomic::{AtomicPtr, AtomicBool, AtomicUsize};
 use loom::thread;
@@ -133,7 +136,31 @@ impl<T: Send> Receiver<T> {
         self.inner.num_sleeping.fetch_sub(1, Ordering::SeqCst);
         ret
     }
+    ///Asynchronous equivalent of recv()
+    pub fn async_recv<'a>(&'a self) -> ReceiveFuture<'a, T> {
+        ReceiveFuture { recv: self }
+    }
 }
+
+pub struct ReceiveFuture<'a, T: Send> {
+    recv: &'a Receiver<T>
+}
+
+
+impl<'a, T: Send> std::future::Future for ReceiveFuture<'a, T> {
+    type Output = Result<T, RecvError>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<T, RecvError>> {
+        match self.recv.try_recv() {
+            Ok(ret) => Poll::Ready(Ok(ret)),
+            Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError)),
+            Err(TryRecvError::Empty) => {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+}
+    
 
 struct Inner<T: Send> {
     queue: Queue<T>,
