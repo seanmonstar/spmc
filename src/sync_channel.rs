@@ -67,7 +67,7 @@ impl<T: Send> Sender<T> {
                     }
                     guard = match tmp {
                         Ok(guard) => guard,
-                        Err(e) => return Err(SendError(tx)),
+                        Err(_) => return Err(SendError(tx)),
                     }
                 }
             }
@@ -75,6 +75,7 @@ impl<T: Send> Sender<T> {
             if self.inner.num_sleeping.load(Ordering::SeqCst) > 0 {
                 let guard = self.inner.sleeping_guard.lock().unwrap();
                 self.inner.sleeping_condvar.notify_one();
+                std::mem::drop(guard);
             }
 
             Ok(())
@@ -88,6 +89,7 @@ impl<T: Send> Drop for Sender<T> {
         if self.inner.num_sleeping.load(Ordering::SeqCst) > 0 {
             let guard = self.inner.sleeping_guard.lock().unwrap();
             self.inner.sleeping_condvar.notify_all();
+            std::mem::drop(guard);
         }
     }
 }
@@ -260,7 +262,7 @@ impl<T: Send> Queue<T> {
     pub(super) unsafe fn push(&self, t: T) -> Result<(), T> {
         let len = self.len.fetch_add(1, Ordering::SeqCst);
         if len >= self.bound {
-            let len = self.len.fetch_sub(1, Ordering::SeqCst);
+            self.len.fetch_sub(1, Ordering::SeqCst);
             return Err(t);
         }
 
