@@ -30,9 +30,11 @@
 //! ```
 
 mod channel;
+mod sync_channel;
 mod loom;
 
 pub use self::channel::{channel, Sender, Receiver};
+pub use self::sync_channel::{sync_channel, Sender as SyncSender, Receiver as SyncReceiver};
 pub use std::sync::mpsc::{SendError, RecvError, TryRecvError};
 
 
