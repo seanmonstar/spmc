@@ -4,6 +4,8 @@ use loom::thread;
 
 #[path = "../src/channel.rs"]
 mod spmc;
+#[path = "../src/sync_channel.rs"]
+mod spmc_sync;
 
 struct DropCounter(usize);
 
@@ -116,6 +118,130 @@ fn message_per_thread() {
 fn extra_message() {
     loom::model(|| {
         let (mut tx, rx) = spmc::channel();
+
+
+        let mut threads = Vec::new();
+
+        threads.push(thread::spawn(move || {
+            tx.send(msg()).unwrap();
+            tx.send(msg()).unwrap();
+            tx.send(msg()).unwrap();
+        }));
+
+        for t in 0..2 {
+            let rx = rx.clone();
+            threads.push(thread::spawn(move || {
+                match rx.recv() {
+                    Ok(_s) => (),
+                    Err(_e) => panic!("rx thread {} didn't get message", t),
+                }
+            }));
+        }
+
+        for th in threads {
+            th.join().unwrap();
+        }
+    });
+}
+
+#[test]
+fn smoke_sync() {
+
+    loom::model(|| {
+        let (mut tx, rx) = spmc_sync::sync_channel::<String>(1);
+
+        let th = thread::spawn(move || {
+            while let Ok(_s) = rx.recv() {
+                // ok
+            }
+        });
+
+        tx.send("hello".into()).unwrap();
+        drop(tx);
+        th.join().unwrap();
+    });
+}
+
+#[test]
+fn no_send_sync() {
+    loom::model(|| {
+        let (tx, rx) = spmc_sync::sync_channel::<String>(1);
+
+        let th = thread::spawn(move || {
+            while let Ok(_s) = rx.recv() {
+                unreachable!("no sends");
+            }
+        });
+
+        drop(tx);
+        th.join().unwrap();
+    });
+}
+
+#[test]
+fn multiple_threads_race_sync() {
+    loom::model(|| {
+        let (mut tx, rx) = spmc_sync::sync_channel(1);
+
+
+        let mut threads = Vec::new();
+
+        threads.push(thread::spawn(move || {
+            tx.send(msg()).unwrap();
+            tx.send(msg()).unwrap();
+        }));
+
+        for _ in 0..2 {
+            let rx = rx.clone();
+            threads.push(thread::spawn(move || {
+                let mut cnt = 0;
+                while let Ok(_s) = rx.recv() {
+                    cnt += 1;
+                }
+                drop(cnt);
+            }));
+        }
+
+        for th in threads {
+            th.join().unwrap();
+        }
+    });
+}
+
+
+#[test]
+fn message_per_thread_sync() {
+    loom::model(|| {
+        let (mut tx, rx) = spmc_sync::sync_channel(1);
+
+
+        let mut threads = Vec::new();
+
+        threads.push(thread::spawn(move || {
+            tx.send(msg()).unwrap();
+            tx.send(msg()).unwrap();
+        }));
+
+        for t in 0..2 {
+            let rx = rx.clone();
+            threads.push(thread::spawn(move || {
+                match rx.recv() {
+                    Ok(_s) => (),
+                    Err(_e) => panic!("rx thread {} didn't get message", t),
+                }
+            }));
+        }
+
+        for th in threads {
+            th.join().unwrap();
+        }
+    });
+}
+
+#[test]
+fn extra_message_sync() {
+    loom::model(|| {
+        let (mut tx, rx) = spmc_sync::sync_channel(1);
 
 
         let mut threads = Vec::new();
